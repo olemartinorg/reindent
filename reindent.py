@@ -30,6 +30,8 @@ def run(filenames, config):
                 tmp = sys.stdout
             else:
                 tmp = tempfile.NamedTemporaryFile(mode='wb', delete=False)
+                tmp.close()
+                tmp = codecs.open(tmp.name, "wb", encoding="utf-8")
 
             while True:
                 line = f.readline()
