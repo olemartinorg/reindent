@@ -9,7 +9,7 @@ import shutil
 import os
 
 
-def find_indentation(line, config):
+def _find_indentation(line, config):
     if len(line) and line[0] in (" ", "\t"):
         if line[0] == "\t":
             config['is-tabs'] = True
@@ -22,53 +22,91 @@ def find_indentation(line, config):
         config["from"] = i
 
 
-def run(filenames, config):
+def find_indentation(line, config):
+    # Find indentation level used in file
+    if config['from'] < 0:
+        _find_indentation(line, config)
+
+    if config['from'] >= 0:
+        # Set old indent
+        indent = " " if not config['is-tabs'] else "\t"
+        indent = indent * config['from']
+
+        # Set new indent
+        newindent = " " if not config['tabs'] else "\t"
+        if not config['tabs']:
+            newindent = newindent * config['to']
+
+        return indent, newindent
+
+    # Continue to the next line, indentation not found
+    return False
+
+
+def replace_inline_tabs(content, config):
+    newcontent = ""
+    imagined_i = 0
+    for i in range(0, len(content)):
+        char = content[i]
+        if char == '\t':
+            spaces = config['tabsize']-(imagined_i % config['tabsize'])
+            newcontent += " " * spaces
+            imagined_i += spaces
+        else:
+            newcontent += char
+            imagined_i += 1
+    return newcontent
+
+
+def run(fd_in, fd_out, config):
+    while True:
+        line = fd_in.readline()
+        if not line:
+            break
+        line = line.rstrip('\r\n')
+
+        # Find indentation style used in file if not set
+        if config['from'] < 0:
+            indent = find_indentation(line, config)
+            if not indent:
+                print(line, file=fd_out)
+                continue
+            indent, newindent = indent
+
+        # Find current indentation level
+        level = 0
+        while True:
+            whitespace = line[:len(indent) * (level + 1)]
+            if whitespace == indent * (level + 1):
+                level += 1
+            else:
+                break
+
+        content = line[len(indent) * level:]
+        if config['all-tabs']:
+            content = replace_inline_tabs(content, config)
+
+        line = (newindent * level) + content
+        print(line, file=fd_out)
+
+
+def run_files(filenames, config):
     for filename in filenames:
-        with codecs.open(filename, encoding=config['encoding']) as f:
+        with codecs.open(filename, encoding=config['encoding']) as fd_in:
             if config['dry-run']:
                 print("Filename: %s" % filename)
-                tmp = sys.stdout
+                fd_out = sys.stdout
             else:
-                tmp = tempfile.NamedTemporaryFile(mode='wb', delete=False)
-                tmp.close()
-                tmp = codecs.open(tmp.name, "wb", encoding="utf-8")
+                fd_out = tempfile.NamedTemporaryFile(mode='wb', delete=False)
+                fd_out.close()
+                fd_out = codecs.open(fd_out.name, "wb", encoding=config['encoding'])
 
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                line = line.rstrip('\r\n')
-
-                if config['from'] < 0:
-                    find_indentation(line, config)
-                if config['from'] < 0:
-                    # Continue to the next line, indentation not found
-                    print(line, file=tmp)
-                    continue
-
-                indent = " " if not config['is-tabs'] else "\t"
-                indent = indent * config['from']
-
-                newindent = " " if not config['tabs'] else "\t"
-                if not config['tabs']:
-                    newindent = newindent * config['to']
-
-                # Find current indentation level
-                level = 0
-                while True:
-                    whitespace = line[:len(indent) * (level + 1)]
-                    if whitespace == indent * (level + 1):
-                        level += 1
-                    else:
-                        break
-
-                line = (newindent * level) + line[len(indent) * level:]
-                print(line, file=tmp)
+            run(fd_in, fd_out, config)
 
             if not config["dry-run"]:
-                tmp.close()
-                shutil.copy(tmp.name, filename)
-                os.remove(tmp.name)
+                fd_out.close()
+                shutil.copy(fd_out.name, filename)
+                os.remove(fd_out.name)
 
 
 def main(args):
@@ -80,6 +118,8 @@ def main(args):
         "tabs": False,
         "encoding": "utf-8",
         "is-tabs": False,
+        "tabsize": 4,
+        "all-tabs": False
     }
     possible_args = {
         "d":  "dry-run",
@@ -88,6 +128,8 @@ def main(args):
         "f:": "from=",
         "n":  "tabs",
         "e:": "encoding=",
+        "s:": "tabsize=",
+        "a":  "all-tabs",
     }
     optlist, filenames = getopt.getopt(
         args[1:],
@@ -111,7 +153,7 @@ def main(args):
         else:
             config[opt] = val
 
-    if config['help'] or not filenames:
+    if config['help']:
         help = """
         Usage: %s [options] filename(s)
 
@@ -127,6 +169,12 @@ def main(args):
             -n, --tabs              Don't convert indentation to spaces,
                                     convert to tabs instead. -t and
                                     --to will have no effect.
+            -a, --all-tabs          Also convert tabs used for alignment
+                                    in the code (Warning: will replace
+                                    all tabs in the file, even if inside
+                                    a string)
+            -s <n>, --tabsize <n>   Set how many spaces one tab is
+                                    (only has an effect on -a, default: 4)
             -e <s>, --encoding <s>  Open files with specified encoding
                                     (default: utf-8)
         """ % args[0]
@@ -135,7 +183,10 @@ def main(args):
         print("\n".join([x[8:] for x in help[1:].split("\n")]))
         sys.exit(0)
 
-    run(filenames, config)
+    if filenames:
+        run_files(filenames, config)
+    else:
+        run(sys.stdin, sys.stdout, config)
 
 if __name__ == "__main__":
     main(sys.argv)
